@@ -6,7 +6,7 @@ import {
 } from '@/lib/atoms';
 import { listen } from '@tauri-apps/api/event';
 import { useAtomValue } from 'jotai';
-import { useEffect, useMemo, type FC } from 'react';
+import { useEffect, useMemo, useState, type FC } from 'react';
 import { FileItem } from './file-item';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
@@ -21,6 +21,9 @@ export interface FilesPanelProps {
 const FilesPanel: FC<FilesPanelProps> = ({ profileId }) => {
   const files = useAtomValue(filesAtom as FilesAtomTauri);
   const selectedFiles = useAtomValue(selectedFilesAtom);
+
+  // 【新增】：创建一个状态，记录用户是否勾选了“重命名文件夹本身”
+  const [renameFolder, setRenameFolder] = useState(false);
 
   const checked = useMemo(
     () => files.length > 0 && selectedFiles.length === files.length,
@@ -39,6 +42,7 @@ const FilesPanel: FC<FilesPanelProps> = ({ profileId }) => {
     ]);
   }
 
+  // 【修改】：根据勾选框的状态，决定是添加文件夹本身，还是读取里面的文件
   async function onAddDir() {
     const openDir = await open({ directory: true });
 
@@ -46,11 +50,18 @@ const FilesPanel: FC<FilesPanelProps> = ({ profileId }) => {
       return;
     }
 
-    const files = await invoke<string[]>('read_dir', { path: openDir });
-
-    atomStore.set(filesAtom as FilesAtomTauri, (prevFiles) => [
-      ...new Set([...prevFiles, ...files]),
-    ]);
+    if (renameFolder) {
+      // 勾选了：直接把文件夹本身加进去
+      atomStore.set(filesAtom as FilesAtomTauri, (prevFiles) => [
+        ...new Set([...prevFiles, openDir]),
+      ]);
+    } else {
+      // 没勾选：保留原版逻辑，读取内部文件
+      const files = await invoke<string[]>('read_dir', { path: openDir });
+      atomStore.set(filesAtom as FilesAtomTauri, (prevFiles) => [
+        ...new Set([...prevFiles, ...files]),
+      ]);
+    }
   }
 
   function onCheckedChange(checked: boolean) {
@@ -70,6 +81,7 @@ const FilesPanel: FC<FilesPanelProps> = ({ profileId }) => {
     atomStore.set(selectedFilesAtom, []);
   }
 
+  // 【修改】：拖拽文件时，也受勾选框的控制
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -80,17 +92,24 @@ const FilesPanel: FC<FilesPanelProps> = ({ profileId }) => {
 
       const dropFiles: string[] = [];
 
-      for (const item of e.payload as string[]) {
-        const isFile = await invoke<boolean>('is_file', { path: item });
-
-        if (isFile) {
+      if (renameFolder) {
+        // 勾选了：拖进来的全部直接作为对象
+        for (const item of e.payload as string[]) {
           dropFiles.push(item);
-          continue;
         }
+      } else {
+        // 没勾选：原版逻辑，遇到文件夹就剥开
+        for (const item of e.payload as string[]) {
+          const isFile = await invoke<boolean>('is_file', { path: item });
 
-        const files = await invoke<string[]>('read_dir', { path: item });
+          if (isFile) {
+            dropFiles.push(item);
+            continue;
+          }
 
-        dropFiles.push(...files);
+          const files = await invoke<string[]>('read_dir', { path: item });
+          dropFiles.push(...files);
+        }
       }
 
       atomStore.set(filesAtom as FilesAtomTauri, (prevFiles) => [
@@ -103,7 +122,7 @@ const FilesPanel: FC<FilesPanelProps> = ({ profileId }) => {
     return () => {
       unlisten?.();
     };
-  }, []);
+  }, [renameFolder]); // 依赖项里加上它，保证切换开关时拖拽逻辑立刻生效
 
   return (
     <div className="size-full">
@@ -115,6 +134,14 @@ const FilesPanel: FC<FilesPanelProps> = ({ profileId }) => {
           <Button size="sm" onClick={onAddDir}>
             添加文件夹
           </Button>
+          {/* 【新增UI】：在按钮旁边加上一个开关 */}
+          <label className="ml-4 flex items-center gap-x-2 cursor-pointer text-sm font-medium text-neutral-700">
+            <Checkbox
+              checked={renameFolder}
+              onCheckedChange={(c) => setRenameFolder(c === true)}
+            />
+            重命名文件夹本身
+          </label>
         </div>
         <div className="flex items-center">
           {selectedFiles.length > 0 && (
